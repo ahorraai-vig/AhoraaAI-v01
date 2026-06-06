@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""
+AhorraAI — Proxy local para Ollama
+Arranca con: python ollama_proxy.py
+Escucha en:  http://localhost:8765
+"""
+
+from http.server import HTTPServer, BaseHTTPRequestHandler
+import json
+import urllib.request
+import urllib.error
+
+OLLAMA_URL = "http://localhost:11434/api/generate"
+MODEL      = "qwen3.5:27b"
+PORT       = 8765
+
+class ProxyHandler(BaseHTTPRequestHandler):
+
+    def log_message(self, format, *args):
+        print(f"[AhorraAI Proxy] {args[0]} {args[1]}")
+
+    def send_cors(self):
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_cors()
+        self.end_headers()
+
+    def do_POST(self):
+        if self.path != "/generate":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        length  = int(self.headers.get("Content-Length", 0))
+        body    = json.loads(self.rfile.read(length))
+        prompt  = body.get("prompt", "")
+        model   = body.get("model", MODEL)
+
+        payload = json.dumps({
+            "model":  model,
+            "prompt": prompt,
+            "stream": False
+        }).encode()
+
+        try:
+            req  = urllib.request.Request(
+                OLLAMA_URL,
+                data    = payload,
+                headers = {"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data     = json.loads(resp.read())
+                response = data.get("response", "")
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_cors()
+            self.end_headers()
+            self.wfile.write(json.dumps({"response": response}).encode())
+
+        except urllib.error.URLError as e:
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.send_cors()
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "error": f"No se puede conectar con Ollama: {str(e)}"
+            }).encode())
+
+        except Exception as e:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.send_cors()
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "error": f"Error interno: {str(e)}"
+            }).encode())
+
+
+if __name__ == "__main__":
+    server = HTTPServer(("localhost", PORT), ProxyHandler)
+    print(f"""
+╔══════════════════════════════════════════╗
+║   AhorraAI · Proxy Ollama arrancado     ║
+║   Modelo:  {MODEL:<30}║
+║   Puerto:  http://localhost:{PORT}          ║
+║   Ctrl+C para detener                   ║
+╚══════════════════════════════════════════╝
+""")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[AhorraAI Proxy] Detenido.")
+        server.server_close()

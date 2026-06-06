@@ -1,0 +1,16 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+ComfyUI/
+ComfyUI_windows_portable_nvidia/
+*.backup
+ComfyUI-Manager/
+pycache/
+*.py
+.vercel
+ComfyUI_windows_portable_nvidia_cu126/

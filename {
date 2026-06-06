@@ -1,0 +1,23 @@
+En l¡nea: 1 Car cter: 63
++ ... d-Content server.ts `n`n// === SERVIDOR ===`napp.listen(PORT, () = co ...
++                                                                 ~
+Falta un argumento en la lista de par metros.
+En l¡nea: 1 Car cter: 66
++ ... Content server.ts `n`n// === SERVIDOR ===`napp.listen(PORT, () = cons ...
++                                                                  ~
+Se esperaba una expresi¢n despu‚s de '('.
+En l¡nea: 1 Car cter: 143
++ ... og(\`Servidor AhorraAI corriendo en http://localhost:\${PORT}\`); });
++                                                                     ~
+Falta el par‚ntesis de cierre ')' en la expresi¢n.
+En l¡nea: 1 Car cter: 145
++ ... og(\`Servidor AhorraAI corriendo en http://localhost:\${PORT}\`); });
++                                                                       ~
+Token '}' inesperado en la expresi¢n o la instrucci¢n.
+En l¡nea: 1 Car cter: 146
++ ... og(\`Servidor AhorraAI corriendo en http://localhost:\${PORT}\`); });
++                                                                        ~
+Token ')' inesperado en la expresi¢n o la instrucci¢n.
+    + CategoryInfo          : ParserError: (:) [], ParentContainsErrorRecordException
+    + FullyQualifiedErrorId : MissingArgument
+ 

@@ -1,0 +1,6 @@
+{
+  "name": "AhorraAI",
+  "description": "Asistente de IA para negocios locales de Vigo con panel de administración y conexión con Google Sheets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
