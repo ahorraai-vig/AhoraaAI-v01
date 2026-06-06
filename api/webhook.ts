@@ -1,9 +1,11 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = process.env.SUPABASE_URL && process.env.SUPABASE_KEY
-  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY)
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY;
+const supabase = process.env.SUPABASE_URL && SUPABASE_KEY
+  ? createClient(process.env.SUPABASE_URL, SUPABASE_KEY)
   : null;
+const SERPAPI_KEY = process.env.SERPAPI_KEY;
 
 const systemPrompt = "Eres AhorraAI, un asistente que ayuda a usuarios a descubrir y comprar oferta local de Vigo. No inventes informacion. Responde siempre en español, de forma breve y directa.";
 const escalationContact = "+34 614053674";
@@ -87,12 +89,63 @@ async function sendBusinessResults(to: string, businesses: any[]) {
   });
 }
 
+function palabraClaveDe(text: string) {
+  return text.toLowerCase().split(" ").find(w => w.length > 4) || text;
+}
+
 async function searchBusinesses(text: string) {
   if (!supabase) return [];
-  const palabraClave = text.toLowerCase().split(" ").find(w => w.length > 4) || text;
+  const palabraClave = palabraClaveDe(text);
   const { data } = await supabase.from("businesses").select("*").eq("status", "verified")
-    .or(`type.ilike.%${palabraClave}%,name.ilike.%${palabraClave}%`).limit(5);
+    .or(`type.ilike.%${palabraClave}%,name.ilike.%${palabraClave}%,address.ilike.%${palabraClave}%`).limit(5);
   return data || [];
+}
+
+// Fallback: busca en Google (SerpAPI google_maps), devuelve los negocios y los
+// guarda en Supabase como verified para no volver a gastar cuota la proxima vez.
+async function searchSerpApi(text: string) {
+  if (!SERPAPI_KEY) return [];
+  const query = `${text} Vigo`;
+  const url = `https://serpapi.com/search.json?engine=google_maps&type=search&hl=es`
+    + `&q=${encodeURIComponent(query)}&api_key=${SERPAPI_KEY}`;
+
+  let local: any[] = [];
+  try {
+    const res = await fetch(url);
+    const json: any = await res.json();
+    local = json.local_results || [];
+  } catch {
+    return [];
+  }
+  if (local.length === 0) return [];
+
+  const palabraClave = palabraClaveDe(text);
+  const candidatos = local.slice(0, 5).map((r: any) => ({
+    name: r.title,
+    type: r.type || palabraClave,
+    phone: r.phone || null,
+    website: r.website || null,
+    hours: typeof r.hours === "string" ? r.hours : (r.open_state || null),
+    address: r.address || null,
+    maps_url: r.place_id ? `https://www.google.com/maps/place/?q=place_id:${r.place_id}` : null,
+    status: "verified",
+    notes: `Importado via SerpAPI (${query})`
+  })).filter((c: any) => c.name);
+
+  if (!supabase || candidatos.length === 0) return candidatos;
+
+  // Evita duplicados: descarta los que ya existen por nombre.
+  const nombres = candidatos.map((c: any) => c.name);
+  const { data: existentes } = await supabase.from("businesses")
+    .select("name").in("name", nombres);
+  const yaExisten = new Set((existentes || []).map((e: any) => e.name.toLowerCase()));
+  const nuevos = candidatos.filter((c: any) => !yaExisten.has(c.name.toLowerCase()));
+
+  if (nuevos.length > 0) {
+    const { data: insertados } = await supabase.from("businesses").insert(nuevos).select("*");
+    if (insertados && insertados.length > 0) return insertados;
+  }
+  return candidatos;
 }
 
 async function generateReply(text: string): Promise<string> {
@@ -144,7 +197,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (isGreeting) {
         await sendWelcomeButtons(from);
       } else if (isCatalogQuery) {
-        const businesses = await searchBusinesses(text);
+        let businesses = await searchBusinesses(text);
+        if (businesses.length === 0) {
+          businesses = await searchSerpApi(text);
+        }
         await sendBusinessResults(from, businesses);
       } else {
         const reply = await generateReply(text);
