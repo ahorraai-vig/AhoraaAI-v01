@@ -89,8 +89,18 @@ async function sendBusinessResults(to: string, businesses: any[]) {
   });
 }
 
+const STOPWORDS = new Set([
+  "busco", "quiero", "donde", "dónde", "hay", "algun", "algún", "alguna",
+  "necesito", "buscar", "puedo", "tienes", "tienen", "sobre", "para", "como",
+  "cómo", "cerca", "vigo", "favor", "porfa", "quería", "queria", "recomienda",
+  "recomiendame", "recomiéndame", "conoces", "sabes", "decir", "buenas"
+]);
+
 function palabraClaveDe(text: string) {
-  return text.toLowerCase().split(" ").find(w => w.length > 4) || text;
+  const palabras = text.toLowerCase().replace(/[¿?¡!.,]/g, "").split(/\s+/);
+  return palabras.find(w => w.length > 4 && !STOPWORDS.has(w))
+    || palabras.find(w => w.length > 3 && !STOPWORDS.has(w))
+    || text;
 }
 
 async function searchBusinesses(text: string) {
@@ -191,20 +201,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (message.type === "text") {
       const text = message.text.body;
       const lower = text.toLowerCase().trim();
-      const isGreeting = /^(hola|buenas|buenos|hey|hi|hello|ola|que tal|qué tal|inicio|menu|menú)/.test(lower);
-      const isCatalogQuery = /(busco|quiero|reservar|pedido|pedir|domicilio|restaurante|cafeteria|masaje|farmacia|clinica|taller)/i.test(lower);
+      const isGreeting = /^(hola|buenas|buenos|hey|hi|hello|ola|que tal|qué tal|inicio|menu|menú)$/.test(lower);
 
       if (isGreeting) {
         await sendWelcomeButtons(from);
-      } else if (isCatalogQuery) {
+      } else {
+        // Para cualquier consulta: primero Supabase, luego SerpAPI; si no hay
+        // nada en ninguno, responde Claude. Asi reconoce cualquier negocio.
         let businesses = await searchBusinesses(text);
         if (businesses.length === 0) {
           businesses = await searchSerpApi(text);
         }
-        await sendBusinessResults(from, businesses);
-      } else {
-        const reply = await generateReply(text);
-        await sendMessage(from, { type: "text", text: { body: reply } });
+        if (businesses.length > 0) {
+          await sendBusinessResults(from, businesses);
+        } else {
+          const reply = await generateReply(text);
+          await sendMessage(from, { type: "text", text: { body: reply } });
+        }
       }
       return res.status(200).send("OK");
     }
