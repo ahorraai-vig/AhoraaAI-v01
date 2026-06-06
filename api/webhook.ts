@@ -26,30 +26,53 @@ async function sendWelcomeButtons(to: string) {
     type: "interactive",
     interactive: {
       type: "button",
-      body: { text: "👋 Hola, soy AhorraAI. ¿En qué puedo ayudarte?" },
+      body: { text: "👋 Hola, soy AhorraAI. Tu asistente local en Vigo.\n\n¿En qué puedo ayudarte?" },
       action: {
         buttons: [
           { type: "reply", reply: { id: "buscar_negocio", title: "🔍 Buscar negocio" } },
-          { type: "reply", reply: { id: "hacer_reserva", title: "📅 Hacer reserva" } },
-          { type: "reply", reply: { id: "hablar_persona", title: "👤 Hablar con alguien" } }
+          { type: "reply", reply: { id: "reservar_pedir", title: "📅 Reservar o pedir" } },
+          { type: "reply", reply: { id: "mas_opciones", title: "ℹ️ Más opciones" } }
         ]
       }
     }
   });
 }
 
-async function sendBusinessList(to: string, businesses: any[]) {
+async function sendMoreOptions(to: string) {
+  await sendMessage(to, {
+    type: "interactive",
+    interactive: {
+      type: "list",
+      body: { text: "¿Qué necesitas?" },
+      action: {
+        button: "Ver opciones",
+        sections: [{
+          title: "Opciones disponibles",
+          rows: [
+            { id: "recomendaciones", title: "⭐ Recomendaciones", description: "Negocios destacados en Vigo" },
+            { id: "mi_lista", title: "📋 Mi lista", description: "Tus negocios y pedidos guardados" },
+            { id: "hacer_pedido", title: "🛒 Hacer pedido", description: "Pedir a domicilio o recogida" },
+            { id: "ayuda", title: "❓ Ayuda", description: "Cómo funciona AhorraAI" },
+            { id: "hablar_persona", title: "👤 Hablar con alguien", description: "Contactar con el equipo" }
+          ]
+        }]
+      }
+    }
+  });
+}
+
+async function sendBusinessResults(to: string, businesses: any[]) {
   if (businesses.length === 0) {
     await sendMessage(to, {
       type: "text",
-      text: { body: `No encontré opciones verificadas. Contacta en ${escalationContact}.` }
+      text: { body: `No encontré opciones verificadas para esa búsqueda. Contacta con nosotros en ${escalationContact}.` }
     });
     return;
   }
   const rows = businesses.map((b: any) => ({
     id: `negocio_${b.id || b.name}`,
     title: b.name.substring(0, 24),
-    description: `${b.type || "Local"}${b.address ? " · " + b.address.substring(0, 30) : ""}`
+    description: `${b.type || "Local"}${b.address ? " · " + b.address.substring(0, 30) : ""}${b.phone ? " · " + b.phone : ""}`
   }));
   await sendMessage(to, {
     type: "interactive",
@@ -57,11 +80,19 @@ async function sendBusinessList(to: string, businesses: any[]) {
       type: "list",
       body: { text: "He encontrado estas opciones en Vigo:" },
       action: {
-        button: "Ver opciones",
+        button: "Ver negocios",
         sections: [{ title: "Negocios verificados", rows }]
       }
     }
   });
+}
+
+async function searchBusinesses(text: string) {
+  if (!supabase) return [];
+  const palabraClave = text.toLowerCase().split(" ").find(w => w.length > 4) || text;
+  const { data } = await supabase.from("businesses").select("*").eq("status", "verified")
+    .or(`type.ilike.%${palabraClave}%,name.ilike.%${palabraClave}%`).limit(5);
+  return data || [];
 }
 
 async function generateReply(text: string): Promise<string> {
@@ -103,51 +134,91 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const from = message.from;
 
-    // Mensaje de texto normal
+    // Mensaje de texto
     if (message.type === "text") {
-      const text = message.text.body.toLowerCase().trim();
-      const isGreeting = /^(hola|buenas|buenos|hey|hi|hello|ola|que tal|qué tal)/.test(text);
+      const text = message.text.body;
+      const lower = text.toLowerCase().trim();
+      const isGreeting = /^(hola|buenas|buenos|hey|hi|hello|ola|que tal|qué tal|inicio|menu|menú)/.test(lower);
+      const isCatalogQuery = /(busco|quiero|reservar|pedido|pedir|domicilio|restaurante|cafeteria|masaje|farmacia|clinica|taller)/i.test(lower);
+
       if (isGreeting) {
         await sendWelcomeButtons(from);
+      } else if (isCatalogQuery) {
+        const businesses = await searchBusinesses(text);
+        await sendBusinessResults(from, businesses);
       } else {
-        const reply = await generateReply(message.text.body);
+        const reply = await generateReply(text);
         await sendMessage(from, { type: "text", text: { body: reply } });
       }
       return res.status(200).send("OK");
     }
 
-    // Respuesta a botón
+    // Respuesta interactiva
     if (message.type === "interactive") {
       const interactive = message.interactive;
 
       if (interactive.type === "button_reply") {
-        const buttonId = interactive.button_reply.id;
-        if (buttonId === "buscar_negocio") {
+        const id = interactive.button_reply.id;
+
+        if (id === "buscar_negocio") {
           await sendMessage(from, {
             type: "text",
-            text: { body: "¿Qué tipo de negocio buscas? Por ejemplo: restaurante, clínica dental, farmacia, taller mecánico..." }
+            text: { body: "¿Qué tipo de negocio buscas? Por ejemplo: restaurante, clínica dental, farmacia, peluquería, taller mecánico..." }
           });
-        } else if (buttonId === "hacer_reserva") {
+        } else if (id === "reservar_pedir") {
           await sendMessage(from, {
             type: "text",
-            text: { body: "¿Para qué negocio quieres hacer la reserva y para cuántas personas?" }
+            text: { body: "¿Para qué negocio quieres hacer la reserva o el pedido? Dime el nombre o el tipo de negocio." }
           });
-        } else if (buttonId === "hablar_persona") {
-          await sendMessage(from, {
-            type: "text",
-            text: { body: `Ahora mismo nuestro equipo está disponible en ${escalationContact}. También puedes seguir escribiéndome y te ayudo.` }
-          });
+        } else if (id === "mas_opciones") {
+          await sendMoreOptions(from);
         }
         return res.status(200).send("OK");
       }
 
       if (interactive.type === "list_reply") {
-        const selectedId = interactive.list_reply.id;
-        const selectedTitle = interactive.list_reply.title;
-        await sendMessage(from, {
-          type: "text",
-          text: { body: `Has elegido *${selectedTitle}*. ¿Quieres hacer una reserva, un pedido o necesitas más información?` }
-        });
+        const id = interactive.list_reply.id;
+        const title = interactive.list_reply.title;
+
+        if (id === "recomendaciones") {
+          const businesses = await searchBusinesses("restaurante");
+          await sendBusinessResults(from, businesses);
+        } else if (id === "mi_lista") {
+          await sendMessage(from, {
+            type: "text",
+            text: { body: "📋 Aún estamos construyendo tu lista personal. Por ahora puedes buscar cualquier negocio y te ayudo a contactar con ellos." }
+          });
+        } else if (id === "hacer_pedido") {
+          await sendMessage(from, {
+            type: "text",
+            text: { body: "🛒 ¿De qué negocio quieres hacer el pedido? Dime el nombre o el tipo y te ayudo." }
+          });
+        } else if (id === "ayuda") {
+          await sendMessage(from, {
+            type: "text",
+            text: { body: "❓ *¿Cómo funciona AhorraAI?*\n\n1. Escríbeme qué tipo de negocio buscas en Vigo\n2. Te muestro opciones reales y verificadas\n3. Te ayudo a reservar, pedir o contactar\n\nSiempre con información real, sin inventar nada. 🙌" }
+          });
+        } else if (id === "hablar_persona") {
+          await sendMessage(from, {
+            type: "text",
+            text: { body: `👤 Nuestro equipo está disponible en ${escalationContact}. También puedes seguir escribiéndome y te ayudo en lo que pueda.` }
+          });
+        } else if (id.startsWith("negocio_")) {
+          await sendMessage(from, {
+            type: "interactive",
+            interactive: {
+              type: "button",
+              body: { text: `Has elegido *${title}*. ¿Qué quieres hacer?` },
+              action: {
+                buttons: [
+                  { type: "reply", reply: { id: `reservar_${id}`, title: "📅 Reservar" } },
+                  { type: "reply", reply: { id: `pedir_${id}`, title: "🛒 Pedir" } },
+                  { type: "reply", reply: { id: `info_${id}`, title: "ℹ️ Más info" } }
+                ]
+              }
+            }
+          });
+        }
         return res.status(200).send("OK");
       }
     }
@@ -156,5 +227,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   return res.status(405).send("Method not allowed");
-}
 }
