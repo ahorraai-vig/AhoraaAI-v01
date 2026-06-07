@@ -438,35 +438,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             text: { body: `👤 Nuestro equipo está disponible en ${escalationContact}. También puedes seguir escribiéndome y te ayudo en lo que pueda.` }
           });
         } else if (id.startsWith("negocio_")) {
-          const ref = id.replace("negocio_", "");
-          const esUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref);
-          let negocio: any = null;
-          if (supabase) {
-            const q = supabase.from("businesses").select("*");
-            const { data } = await (esUuid ? q.eq("id", ref) : q.eq("name", ref)).limit(1);
-            negocio = data?.[0] || null;
-          }
-          if (negocio) {
-            await sendBusinessCard(from, negocio);
-          } else {
-            await sendMessage(from, {
-              type: "interactive",
-              interactive: {
-                type: "button",
-                body: { text: `Has elegido *${title}*. ¿Qué quieres hacer?` },
-                action: {
-                  buttons: [
-                    { type: "reply", reply: { id: `reservar_${id}`, title: "📅 Reservar" } },
-                    { type: "reply", reply: { id: `pedir_${id}`, title: "🛒 Pedir" } }
-                  ]
-                }
-              }
-            });
-          }
-        }
-        return res.status(200).send("OK");
+  const businessId = id.replace("negocio_", "");
+  let infoText = `*${title}*\n\nEscríbeme qué necesitas saber o si quieres reservar o pedir.`;
+  
+  if (supabase) {
+    const { data } = await supabase
+      .from("businesses")
+      .select("faqs, hours, phone, address, maps_url")
+      .eq("id", businessId)
+      .single();
+    
+    if (data) {
+      infoText = `*${title}*\n\n`;
+      if (data.hours) infoText += `🕐 *Horario:* ${data.hours}\n\n`;
+      if (data.phone) infoText += `📞 *Teléfono:* ${data.phone}\n\n`;
+      if (data.address) infoText += `📍 *Dirección:* ${data.address}\n\n`;
+      if (data.faqs) infoText += `📋 *Precios y menú:*\n${data.faqs}\n\n`;
+      if (data.maps_url) infoText += `🗺️ ${data.maps_url}`;
+    }
+  }
+
+  await sendMessage(from, {
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: infoText.substring(0, 1024) },
+      action: {
+        buttons: [
+          { type: "reply", reply: { id: `reservar_${id}`, title: "📅 Reservar" } },
+          { type: "reply", reply: { id: `pedir_${id}`, title: "🛒 Pedir" } },
+          { type: "reply", reply: { id: `llamar_${id}`, title: "📞 Llamar" } }
+        ]
       }
     }
+  });
+}
 
     return res.status(200).send("OK");
   }
