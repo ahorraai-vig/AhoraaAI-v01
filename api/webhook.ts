@@ -89,6 +89,71 @@ async function sendBusinessResults(to: string, businesses: any[]) {
   });
 }
 
+function buildCaption(b: any): string {
+  return [
+    `*${b.name}*`,
+    b.type ? `🏷️ ${b.type}` : "",
+    b.address ? `📍 ${b.address}` : "",
+    b.phone ? `📞 ${b.phone}` : "",
+    b.hours ? `🕒 ${b.hours}` : "",
+    b.website ? `🌐 ${b.website}` : "",
+    b.maps_url ? `🗺️ ${b.maps_url}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+// Envia la ficha de un negocio: foto (si hay) + datos, menu/catalogo en PDF
+// (si hay) y botones de accion.
+async function sendBusinessCard(to: string, b: any) {
+  const caption = buildCaption(b);
+  if (b.image_url) {
+    await sendMessage(to, { type: "image", image: { link: b.image_url, caption } });
+  } else {
+    await sendMessage(to, { type: "text", text: { body: caption } });
+  }
+  if (b.menu_url) {
+    await sendMessage(to, {
+      type: "document",
+      document: { link: b.menu_url, filename: `${b.name}.pdf`, caption: "📄 Menú / Catálogo" }
+    });
+  }
+  const ref = b.id || b.name;
+  await sendMessage(to, {
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: "¿Qué quieres hacer?" },
+      action: {
+        buttons: [
+          { type: "reply", reply: { id: `reservar_negocio_${ref}`, title: "📅 Reservar" } },
+          { type: "reply", reply: { id: `pedir_negocio_${ref}`, title: "🛒 Pedir" } }
+        ]
+      }
+    }
+  });
+}
+
+// Distancia en km entre dos coordenadas (formula haversine).
+function distanciaKm(la1: number, lo1: number, la2: number, lo2: number): number {
+  const R = 6371;
+  const dLa = (la2 - la1) * Math.PI / 180;
+  const dLo = (lo2 - lo1) * Math.PI / 180;
+  const a = Math.sin(dLa / 2) ** 2
+    + Math.cos(la1 * Math.PI / 180) * Math.cos(la2 * Math.PI / 180) * Math.sin(dLo / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Devuelve los negocios mas cercanos a unas coordenadas, dentro de radioKm.
+async function negociosCercanos(lat: number, lng: number, radioKm = 5) {
+  if (!supabase) return [];
+  const { data } = await supabase.from("businesses").select("*")
+    .eq("status", "verified").not("lat", "is", null).not("lng", "is", null);
+  return (data || [])
+    .map((b: any) => ({ ...b, _dist: distanciaKm(lat, lng, b.lat, b.lng) }))
+    .filter((b: any) => b._dist <= radioKm)
+    .sort((a: any, b: any) => a._dist - b._dist)
+    .slice(0, 5);
+}
+
 const STOPWORDS = new Set([
   "busco", "quiero", "donde", "dónde", "hay", "algun", "algún", "alguna",
   "necesito", "buscar", "puedo", "tienes", "tienen", "sobre", "para", "como",
@@ -138,6 +203,9 @@ async function searchSerpApi(text: string) {
     hours: typeof r.hours === "string" ? r.hours : (r.open_state || null),
     address: r.address || null,
     maps_url: r.place_id ? `https://www.google.com/maps/place/?q=place_id:${r.place_id}` : null,
+    image_url: r.thumbnail || null,
+    lat: r.gps_coordinates?.latitude ?? null,
+    lng: r.gps_coordinates?.longitude ?? null,
     status: "verified",
     notes: `Importado via SerpAPI (${query})`
   })).filter((c: any) => c.name);
@@ -222,6 +290,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(200).send("OK");
     }
 
+    // Ubicacion compartida por el usuario
+    if (message.type === "location") {
+      const { latitude, longitude } = message.location || {};
+      if (latitude && longitude) {
+        const cercanos = await negociosCercanos(latitude, longitude);
+        if (cercanos.length > 0) {
+          await sendMessage(from, {
+            type: "text",
+            text: { body: "📍 Estos son los negocios más cercanos a tu ubicación:" }
+          });
+          await sendBusinessResults(from, cercanos);
+        } else {
+          await sendMessage(from, {
+            type: "text",
+            text: { body: "No encontré negocios cerca de tu ubicación todavía. Dime qué buscas y te ayudo." }
+          });
+        }
+      }
+      return res.status(200).send("OK");
+    }
+
     // Respuesta interactiva
     if (message.type === "interactive") {
       const interactive = message.interactive;
@@ -273,20 +362,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             text: { body: `👤 Nuestro equipo está disponible en ${escalationContact}. También puedes seguir escribiéndome y te ayudo en lo que pueda.` }
           });
         } else if (id.startsWith("negocio_")) {
-          await sendMessage(from, {
-            type: "interactive",
-            interactive: {
-              type: "button",
-              body: { text: `Has elegido *${title}*. ¿Qué quieres hacer?` },
-              action: {
-                buttons: [
-                  { type: "reply", reply: { id: `reservar_${id}`, title: "📅 Reservar" } },
-                  { type: "reply", reply: { id: `pedir_${id}`, title: "🛒 Pedir" } },
-                  { type: "reply", reply: { id: `info_${id}`, title: "ℹ️ Más info" } }
-                ]
+          const ref = id.replace("negocio_", "");
+          const esUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref);
+          let negocio: any = null;
+          if (supabase) {
+            const q = supabase.from("businesses").select("*");
+            const { data } = await (esUuid ? q.eq("id", ref) : q.eq("name", ref)).limit(1);
+            negocio = data?.[0] || null;
+          }
+          if (negocio) {
+            await sendBusinessCard(from, negocio);
+          } else {
+            await sendMessage(from, {
+              type: "interactive",
+              interactive: {
+                type: "button",
+                body: { text: `Has elegido *${title}*. ¿Qué quieres hacer?` },
+                action: {
+                  buttons: [
+                    { type: "reply", reply: { id: `reservar_${id}`, title: "📅 Reservar" } },
+                    { type: "reply", reply: { id: `pedir_${id}`, title: "🛒 Pedir" } }
+                  ]
+                }
               }
-            }
-          });
+            });
+          }
         }
         return res.status(200).send("OK");
       }
