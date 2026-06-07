@@ -21,7 +21,7 @@ type Commerce = { id: string; name: string; type: string; phone: string; whatsap
 type Customer = { id: string; channel: Channel; channelUserId: string; displayName?: string; };
 type ConversationMessage = { id: string; sender: "user" | "assistant"; text: string; timestamp: string; };
 type Conversation = { id: string; commerceId: string; customerId: string; channel: Channel; messages: ConversationMessage[]; lastAgent: AgentType; escalated: boolean; updatedAt: string; };
-type CatalogBusiness = { id: string; name: string; category: string; area: string; address: string | null; phone: string | null; hours: string | null; services: string[]; keywords: string[]; sourceUrl: string; };
+type CatalogBusiness = { id: string; name: string; category: string; area: string; address: string | null; phone: string | null; hours: any; services: any; faqs: any; systemPrompt: string | null; keywords: string[]; sourceUrl: string; };
 type JourneyIntent = "pedido" | "reserva" | "cita" | "descubrir";
 
 const db = {
@@ -81,7 +81,7 @@ async function buscarEnSupabase(texto: string): Promise<CatalogBusiness[]> {
 
   const { data, error } = await supabase.from("businesses").select("*").eq("status", "verified").or(`type.ilike.%${palabraClave}%,name.ilike.%${palabraClave}%`).limit(3);
   if (error) return [];
-  return (data || []).map(b => ({ id: b.id || b.name, name: b.name, category: b.type || "Local", area: "Vigo", address: b.address || null, phone: b.phone || null, hours: null, services: [], keywords: [], sourceUrl: b.maps_url || "" }));
+  return (data || []).map(b => ({ id: b.id || b.name, name: b.name, category: b.type || "Local", area: "Vigo", address: b.address || null, phone: b.phone || null, hours: b.hours ?? null, services: b.services ?? null, faqs: b.faqs ?? null, systemPrompt: b.system_prompt ?? null, keywords: [], sourceUrl: b.maps_url || b.website || "" }));
 }
 
 function isCatalogQuery(text: string) { return /(busco|quiero|reservar|pedido|pedir|domicilio|restaurante|cafeteria|masaje|farmacia|clinica)/i.test(text.toLowerCase()); }
@@ -101,22 +101,27 @@ async function generateReply(text: string, commerce: Commerce, conversation: Con
   
   let contextoAhorraAI = "";
 
-  // 1. Buscamos en la base de datos si la pregunta tiene que ver con comercios
-  if (isCatalogQuery(text)) {
-    const negocios = await buscarEnSupabase(text);
-    
-    if (negocios.length > 0) {
-      contextoAhorraAI = "\n\nAquí tienes la información extraída de nuestra base de datos de AhorraAI para responder al usuario. Usa ESTOS datos exactos:\n";
-      negocios.forEach(negocio => {
-        contextoAhorraAI += `- Nombre: ${negocio.name}, Categoría: ${negocio.category}, Dirección: ${negocio.address || "No especificada"}, Teléfono: ${negocio.phone || "No especificado"}\n`;
-      });
-    } else {
-      contextoAhorraAI = `\n\nHe buscado en la base de datos pero no he encontrado comercios locales para esta petición. Pide disculpas amablemente y ofrece el teléfono de contacto manual: ${commerce.escalationContact}.`;
-    }
+  // 1. Buscamos SIEMPRE en la base de datos por si la consulta coincide con un comercio
+  const negocios = await buscarEnSupabase(text);
+
+  if (negocios.length > 0) {
+    contextoAhorraAI = "\n\nAquí tienes la información extraída de nuestra base de datos de AhorraAI para responder al usuario. Usa ESTOS datos exactos y no inventes precios ni horarios:\n";
+    negocios.forEach(negocio => {
+      contextoAhorraAI += `\n### ${negocio.name} (${negocio.category})\n`;
+      contextoAhorraAI += `Dirección: ${negocio.address || "No especificada"}\n`;
+      contextoAhorraAI += `Teléfono: ${negocio.phone || "No especificado"}\n`;
+      if (negocio.hours) contextoAhorraAI += `Horarios: ${JSON.stringify(negocio.hours)}\n`;
+      if (negocio.services) contextoAhorraAI += `Servicios y menú con precios: ${JSON.stringify(negocio.services)}\n`;
+      if (negocio.faqs) contextoAhorraAI += `Preguntas frecuentes: ${JSON.stringify(negocio.faqs)}\n`;
+      if (negocio.sourceUrl) contextoAhorraAI += `Enlace: ${negocio.sourceUrl}\n`;
+    });
+  } else if (isCatalogQuery(text)) {
+    contextoAhorraAI = `\n\nHe buscado en la base de datos pero no he encontrado comercios locales para esta petición. Pide disculpas amablemente y ofrece el teléfono de contacto manual: ${commerce.escalationContact}.`;
   }
 
-  // 2. Unimos las instrucciones base con los datos encontrados
-  const systemPromptEnriquecido = commerce.systemPrompt + contextoAhorraAI;
+  // 2. Unimos las instrucciones base (prompt propio del negocio si lo tiene) con los datos encontrados
+  const basePrompt = negocios.find(n => n.systemPrompt)?.systemPrompt || commerce.systemPrompt;
+  const systemPromptEnriquecido = basePrompt + contextoAhorraAI;
 
   // 3. Dejamos que Claude genere la respuesta final con toda esa información
   try {
