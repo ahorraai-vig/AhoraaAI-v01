@@ -89,13 +89,23 @@ async function sendBusinessResults(to: string, businesses: any[]) {
   });
 }
 
+// Convierte el campo hours (texto o JSON {local, domicilio}) en una linea legible.
+function formatHours(h: any): string {
+  if (!h) return "";
+  if (typeof h === "string") return h;
+  const partes: string[] = [];
+  if (h.local) partes.push(`Local ${[h.local.manana, h.local.tarde].filter(Boolean).join(" y ")}`);
+  if (h.domicilio) partes.push(`Domicilio ${[h.domicilio.manana, h.domicilio.tarde].filter(Boolean).join(" y ")}`);
+  return partes.join(" · ") || JSON.stringify(h);
+}
+
 function buildCaption(b: any): string {
   return [
     `*${b.name}*`,
     b.type ? `🏷️ ${b.type}` : "",
     b.address ? `📍 ${b.address}` : "",
     b.phone ? `📞 ${b.phone}` : "",
-    b.hours ? `🕒 ${b.hours}` : "",
+    b.hours ? `🕒 ${formatHours(b.hours)}` : "",
     b.website ? `🌐 ${b.website}` : "",
     b.maps_url ? `🗺️ ${b.maps_url}` : ""
   ].filter(Boolean).join("\n");
@@ -158,7 +168,11 @@ const STOPWORDS = new Set([
   "busco", "quiero", "donde", "dónde", "hay", "algun", "algún", "alguna",
   "necesito", "buscar", "puedo", "tienes", "tienen", "sobre", "para", "como",
   "cómo", "cerca", "vigo", "favor", "porfa", "quería", "queria", "recomienda",
-  "recomiendame", "recomiéndame", "conoces", "sabes", "decir", "buenas"
+  "recomiendame", "recomiéndame", "conoces", "sabes", "decir", "buenas",
+  // Palabras de "intención de info" que NO deben usarse como clave de busqueda
+  "precio", "precios", "cuesta", "cuestan", "cuánto", "cuanto", "vale", "valen",
+  "horario", "horarios", "hora", "horas", "abre", "abren", "cierra", "cierran",
+  "menu", "menú", "carta", "abierto", "abierta"
 ]);
 
 function palabraClaveDe(text: string) {
@@ -226,7 +240,57 @@ async function searchSerpApi(text: string) {
   return candidatos;
 }
 
-async function generateReply(text: string): Promise<string> {
+// Busca un negocio por id (uuid) o por nombre exacto.
+async function fetchBusiness(ref: string) {
+  if (!supabase) return null;
+  const esUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(ref);
+  const q = supabase.from("businesses").select("*");
+  const { data } = await (esUuid ? q.eq("id", ref) : q.eq("name", ref)).limit(1);
+  return data?.[0] || null;
+}
+
+async function sendPedirInfo(to: string, b: any) {
+  if (!b) {
+    await sendMessage(to, { type: "text", text: { body: "No encontré ese negocio. Dime su nombre y te ayudo a pedir." } });
+    return;
+  }
+  const s = b.services || {};
+  const links: string[] = [];
+  if (s.web_pedidos) links.push(`🌐 ${s.web_pedidos}`);
+  if (s.justeat) links.push(`🛵 JustEat: ${s.justeat}`);
+  if (b.website && !s.web_pedidos) links.push(`🌐 ${b.website}`);
+  const body = `🛒 *Pedir en ${b.name}*\n\n`
+    + (links.length ? `Haz tu pedido aquí:\n${links.join("\n")}\n\n` : "")
+    + (b.phone ? `O llama al 📞 ${b.phone}` : `Contacta en ${escalationContact}`);
+  await sendMessage(to, { type: "text", text: { body } });
+}
+
+async function sendReservarInfo(to: string, b: any) {
+  if (!b) {
+    await sendMessage(to, { type: "text", text: { body: "No encontré ese negocio. Dime su nombre y te ayudo a reservar." } });
+    return;
+  }
+  const body = `📅 *Reservar en ${b.name}*\n\n`
+    + (b.phone ? `Llama para reservar: 📞 ${b.phone}` : `Contacta en ${escalationContact}`)
+    + (b.address ? `\n📍 ${b.address}` : "")
+    + (b.hours ? `\n🕒 ${formatHours(b.hours)}` : "");
+  await sendMessage(to, { type: "text", text: { body } });
+}
+
+// Si el negocio trae system_prompt propio y/o datos (hours, services, faqs),
+// se los pasamos a Claude para que responda con info exacta y no invente.
+async function generateReply(text: string, negocio?: any): Promise<string> {
+  let system = systemPrompt;
+  if (negocio) {
+    if (negocio.system_prompt) system = negocio.system_prompt;
+    system += "\n\nDatos EXACTOS del negocio (no inventes precios ni horarios):\n"
+      + `Nombre: ${negocio.name}\n`
+      + (negocio.address ? `Dirección: ${negocio.address}\n` : "")
+      + (negocio.phone ? `Teléfono: ${negocio.phone}\n` : "")
+      + (negocio.hours ? `Horarios: ${JSON.stringify(negocio.hours)}\n` : "")
+      + (negocio.services ? `Servicios y menú con precios: ${JSON.stringify(negocio.services)}\n` : "")
+      + (negocio.faqs ? `Preguntas frecuentes: ${JSON.stringify(negocio.faqs)}\n` : "");
+  }
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -237,7 +301,7 @@ async function generateReply(text: string): Promise<string> {
     body: JSON.stringify({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 300,
-      system: systemPrompt,
+      system,
       messages: [{ role: "user", content: text }]
     })
   });
@@ -280,7 +344,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (businesses.length === 0) {
           businesses = await searchSerpApi(text);
         }
-        if (businesses.length > 0) {
+        // Si la pregunta es de info (precio, horario, menu...) y hay un negocio,
+        // respondemos con SUS datos exactos en vez de listar opciones.
+        const infoIntent = /(precio|cuesta|cuestan|cuánto|cuanto|vale|valen|horario|abre|abren|cierra|menú|menu|carta|domicilio|reparto|abierto)/.test(lower);
+        if (businesses.length === 1 && infoIntent) {
+          const reply = await generateReply(text, businesses[0]);
+          await sendMessage(from, { type: "text", text: { body: reply } });
+        } else if (businesses.length > 0) {
           await sendBusinessResults(from, businesses);
         } else {
           const reply = await generateReply(text);
@@ -330,6 +400,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           });
         } else if (id === "mas_opciones") {
           await sendMoreOptions(from);
+        } else if (id.startsWith("pedir_")) {
+          const ref = id.replace(/^pedir_(negocio_)?/, "");
+          await sendPedirInfo(from, await fetchBusiness(ref));
+        } else if (id.startsWith("reservar_")) {
+          const ref = id.replace(/^reservar_(negocio_)?/, "");
+          await sendReservarInfo(from, await fetchBusiness(ref));
         }
         return res.status(200).send("OK");
       }
