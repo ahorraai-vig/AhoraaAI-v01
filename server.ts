@@ -182,4 +182,137 @@ app.post("/webhook", asyncHandler(async (req: express.Request, res: express.Resp
   res.sendStatus(200);
 }));
 
+// ================================================
+// NUEVO: SCRAPER DE NEGOCIOS VIGO CON SERPAPI
+// ================================================
+
+// Función principal de scraping
+async function scrapeNegociosVigo() {
+  if (!process.env.SERPAPI_KEY) {
+    console.error("❌ Falta SERPAPI_KEY en .env");
+    return;
+  }
+
+  const categorias = [
+    "restaurantes en Vigo centro",
+    "bares en Casco Vello Vigo",
+    "cafeterías Vigo",
+    "tiendas de alimentación Vigo",
+    "farmacias Vigo",
+    "peluquerías Vigo centro",
+    "supermercados Vigo",
+    "gimnasios Vigo",
+    "dentistas Vigo",
+    // Añade aquí más según necesites
+  ];
+
+  console.log(`🚀 Iniciando scrape de ${categorias.length} categorías...`);
+
+  for (const query of categorias) {
+    try {
+      console.log(`🔍 Buscando: ${query}`);
+
+      const url = `https://serpapi.com/search.json?engine=google_maps&q=${encodeURIComponent(query)}&ll=@42.240,-8.720,14z&radius=10000&api_key=${process.env.SERPAPI_KEY}`;
+
+      const response = await fetch(url);
+      const data = await response.json();
+
+      const results = data.local_results?.results || data.local_results || [];
+
+      for (const place of results) {
+        if (!place.title) continue;
+
+        const negocio = {
+          nombre: place.title,
+          direccion: place.address || place.street || null,
+          telefono: place.phone || null,
+          google_place_id: place.place_id || null,
+          tipo_negocio: query.split(" ")[0] || "Comercio",
+          zona_barrio: extraerZona(place.address || ""), // Función auxiliar abajo
+          latitud: place.gps_coordinates?.latitude || null,
+          longitud: place.gps_coordinates?.longitude || null,
+          horario: place.hours || null,
+          web: place.website || null,
+          fuente: "serpapi",
+          datos_extra: place
+        };
+
+        // Upsert (inserta o actualiza)
+        const { error } = await supabase
+          .from('negocios_vigo')
+          .upsert(negocio, { 
+            onConflict: 'google_place_id',
+            ignoreDuplicates: true 
+          });
+
+        if (error) {
+          console.error(`Error guardando ${place.title}:`, error.message);
+        } else {
+          console.log(`✅ Guardado: ${place.title}`);
+        }
+      }
+    } catch (err) {
+      console.error(`❌ Error en categoría ${query}:`, err);
+    }
+
+    // Pequeña pausa para no saturar SerpAPI
+    await new Promise(r => setTimeout(r, 800));
+  }
+
+  console.log("🎉 Scrape de negocios finalizado.");
+}
+
+// Función auxiliar para intentar detectar zona
+function extraerZona(direccion: string): string {
+  const zonas = ["Casco Vello", "Centro", "Bouzas", "Navia", "Teis", "Bajo de Guía", "Coia", "Zamáns"];
+  for (const zona of zonas) {
+    if (direccion.toLowerCase().includes(zona.toLowerCase())) return zona;
+  }
+  return "Vigo";
+}
+
+// === NUEVO ENDPOINT PARA LLAMAR AL SCRAPER ===
+app.post("/scrape-negocios", asyncHandler(async (req: express.Request, res: express.Response) => {
+  // Opcional: protección simple (puedes mejorar después)
+  if (req.headers.authorization !== `Bearer ${process.env.ADMIN_SECRET}`) {
+    return res.status(401).json({ error: "No autorizado" });
+  }
+
+  res.json({ message: "Scrape iniciado en background..." });
+  
+  // Ejecutar en segundo plano
+  scrapeNegociosVigo().catch(console.error);
+}));
+
+// === MEJORA: Actualizar buscarEnSupabase para usar la nueva tabla ===
+async function buscarEnSupabase(texto: string): Promise<CatalogBusiness[]> {
+  if (!supabase) return [];
+
+  const { data, error } = await supabase
+    .from("negocios_vigo")
+    .select("*")
+    .or(`nombre.ilike.%${texto}%,tipo_negocio.ilike.%${texto}%,categoria.ilike.%${texto}%`)
+    .limit(5);
+
+  if (error) {
+    console.error("Error Supabase:", error);
+    return [];
+  }
+
+  return (data || []).map(b => ({
+    id: b.id,
+    name: b.nombre,
+    category: b.tipo_negocio || b.categoria || "Local",
+    area: b.zona_barrio || "Vigo",
+    address: b.direccion,
+    phone: b.telefono,
+    hours: b.horario,
+    services: null,
+    faqs: null,
+    systemPrompt: null,
+    keywords: [],
+    sourceUrl: b.web || ""
+  }));
+}
+
 app.listen(PORT, () => console.log(`Servidor AhorraAI en http://localhost:${PORT}`));
