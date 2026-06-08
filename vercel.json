@@ -2,11 +2,5 @@
   "version": 2,
   "buildCommand": "npm run build",
   "installCommand": "npm install",
-  "framework": "vite",
-  "outputDirectory": "dist",
-  "functions": {
-    "server.cjs": {
-      "runtime": "nodejs20.x"
-    }
-  }
+  "framework": "vite"
 }
