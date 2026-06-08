@@ -2,10 +2,5 @@
   "version": 2,
   "buildCommand": "npm run build",
   "installCommand": "npm install",
-  "framework": null,
-  "functions": {
-    "api/*": {
-      "runtime": "nodejs20.x"
-    }
-  }
+  "framework": null
 }
