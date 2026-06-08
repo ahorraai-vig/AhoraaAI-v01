@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { Analytics } from "@vercel/analytics/react";
 import ClientManager from "./components/ClientManager";
 import IntakeForm from "./components/IntakeForm";
 import PromptViewer from "./components/PromptViewer";
@@ -62,7 +63,9 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 font-sans antialiased text-slate-800 selection:bg-teal-500 selection:text-white">
+    <>
+      <Analytics />
+      <div className="min-h-screen bg-slate-50 font-sans antialiased text-slate-800 selection:bg-teal-500 selection:text-white">
       
       {/* Upper Navigation/Header Bar */}
       <header className="border-b border-slate-200 bg-white sticky top-0 z-40">
@@ -233,6 +236,7 @@ export default function App() {
         </div>
       </footer>
 
-    </div>
+      </div>
+    </>
   );
 }
